@@ -18,17 +18,23 @@ package controllers
 import (
 	"context"
 	"fmt"
+	"net/url"
+	"path"
+
 	"github.com/go-logr/logr"
 	spiffeidv1beta1 "github.com/transferwise/spire-k8s-registrar/api/v1beta1"
+
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
+	// metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
-	"net/url"
-	"path"
+	//"k8s.io/client-go/kubernetes"
+	//"k8s.io/client-go/rest"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 )
 
 type PodReconcilerMode int32
@@ -89,7 +95,7 @@ func (r *PodReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 		}
 	}
 
-	existing := &spiffeidv1beta1.ClusterSpiffeID{}
+	existing := &spiffeidv1beta1.SpiffeID{}
 	if err := r.Get(ctx, types.NamespacedName{Name: spiffeidname}, existing); err != nil {
 		if !errors.IsNotFound(err) {
 			log.Error(err, "Failed to get ClusterSpiffeID", "name", spiffeidname)
@@ -97,47 +103,15 @@ func (r *PodReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 		}
 	}
 
-	myFinalizerName := "spiffeid.spiffe.io/pods"
-	if pod.ObjectMeta.DeletionTimestamp.IsZero() {
-		if !containsString(pod.GetFinalizers(), myFinalizerName) {
-			pod.SetFinalizers(append(pod.GetFinalizers(), myFinalizerName))
-			if err := r.Update(ctx, &pod); err != nil {
-				return ctrl.Result{}, err
-			}
-
-			if err := r.Get(ctx, req.NamespacedName, &pod); err != nil {
-				if !errors.IsNotFound(err) {
-					log.Error(err, "unable to fetch Pod")
-				}
-
-				return ctrl.Result{}, client.IgnoreNotFound(err)
-			}
-		}
-	} else {
-		if containsString(pod.GetFinalizers(), myFinalizerName) && existing != nil {
-			// our finalizer is present, so lets handle any external dependency
-			if err := r.Delete(ctx, existing); err != nil {
-				log.Error(err, "unable to delete cluster SPIFFE ID", "clusterSpiffeId", existing.Spec.SpiffeId)
-				return ctrl.Result{}, err
-			}
-
-			// remove our finalizer from the list and update it.
-			pod.SetFinalizers(removeString(pod.GetFinalizers(), myFinalizerName))
-			if err := r.Update(ctx, &pod); err != nil {
-				return ctrl.Result{}, err
-			}
-			log.Info("Finalized entry", "entry", pod.Name)
-		}
-		return ctrl.Result{}, nil
-	}
-
-	clusterSpiffeId := &spiffeidv1beta1.ClusterSpiffeID{
+	namespaceSpiffeId := &spiffeidv1beta1.SpiffeID{
 		ObjectMeta: v1.ObjectMeta{
 			Name:        spiffeidname,
+			Namespace:   pod.Namespace,
 			Annotations: make(map[string]string),
 		},
-		Spec: spiffeidv1beta1.ClusterSpiffeIDSpec{
+		Spec: spiffeidv1beta1.SpiffeIDSpec{
 			SpiffeId: spiffeId,
+			DnsNames: make([]string, 0),
 			Selector: spiffeidv1beta1.Selector{
 				PodUid:    pod.GetUID(),
 				Namespace: pod.Namespace,
@@ -145,17 +119,17 @@ func (r *PodReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 		},
 	}
 
-	// Namespace scoped resource cannot own a cluster scoped resource
-	// Work out how to deal with GC later...
-	//err = controllerutil.SetControllerReference(&pod, clusterSpiffeId, r.Scheme)
-	//if err != nil {
-	//	log.Error(err, "Failed to create new SpiffeID", "SpiffeID.Name", clusterSpiffeId.Name)
-	//	return ctrl.Result{}, err
-	//}
-	err := r.Create(ctx, clusterSpiffeId)
+	namespaceSpiffeId.Spec.DnsNames = append(namespaceSpiffeId.Spec.DnsNames, pod.Name)
+
+	err := controllerutil.SetControllerReference(&pod, namespaceSpiffeId, r.Scheme)
+	if err != nil {
+		log.Error(err, "Failed to create new SpiffeID", "SpiffeID.Name", namespaceSpiffeId.Name)
+		return ctrl.Result{}, err
+	}
+	err = r.Create(ctx, namespaceSpiffeId)
 	if err != nil {
 		if !errors.IsAlreadyExists(err) {
-			log.Error(err, "Failed to create new SpiffeID", "SpiffeID.Name", clusterSpiffeId.Name)
+			log.Error(err, "Failed to create new SpiffeID", "SpiffeID.Name", namespaceSpiffeId.Name)
 			return ctrl.Result{}, err
 		}
 	}
@@ -176,4 +150,57 @@ func (r *PodReconciler) makeID(pathFmt string, pathArgs ...interface{}) string {
 		Path:   path.Clean(fmt.Sprintf(pathFmt, pathArgs...)),
 	}
 	return id.String()
+}
+
+// EndPointReconciler reconciles a EndPoint object
+type EndpointReconciler struct {
+	client.Client
+	Log    logr.Logger
+	Scheme *runtime.Scheme
+}
+
+func (e *EndpointReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
+	var endpoints corev1.Endpoints
+
+	ctx := context.Background()
+	log := e.Log.WithValues("endpoint", req.NamespacedName)
+
+	if err := e.Get(ctx, req.NamespacedName, &endpoints); err != nil {
+		if !errors.IsNotFound(err) {
+			log.Error(err, "unable to fetch Endpoint")
+		}
+		// we'll ignore not-found errors, since they can't be fixed by an immediate
+		// requeue (we'll need to wait for a new notification), and we can get them
+		// on deleted requests.
+		return ctrl.Result{}, client.IgnoreNotFound(err)
+	}
+
+	svcName := endpoints.ObjectMeta.Name
+
+	for _, subset := range endpoints.Subsets {
+		for _, address := range subset.Addresses {
+			if address.TargetRef != nil {
+				spiffeidname := fmt.Sprintf("spire-operator-%s", address.TargetRef.UID)
+				existing := &spiffeidv1beta1.SpiffeID{}
+				if err := e.Get(ctx, types.NamespacedName{Name: spiffeidname, Namespace: address.TargetRef.Namespace}, existing); err != nil {
+					if !errors.IsNotFound(err) {
+						log.Error(err, "Failed to get SpiffeID", "name", spiffeidname)
+						continue
+					}
+				}
+				if existing != nil {
+					existing.Spec.DnsNames = append([]string{svcName}, existing.Spec.DnsNames...)
+					e.Update(ctx, existing)
+				}
+			}
+		}
+	}
+
+	return ctrl.Result{}, nil
+}
+
+func (e *EndpointReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	return ctrl.NewControllerManagedBy(mgr).
+		For(&corev1.Endpoints{}).
+		Complete(e)
 }

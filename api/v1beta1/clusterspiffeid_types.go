@@ -29,6 +29,7 @@ type ClusterSpiffeIDSpec struct {
 
 	SpiffeId string   `json:"spiffeId"`
 	Selector Selector `json:"selector"`
+	DnsNames []string `json:"dnsNames"`
 }
 
 // ClusterSpiffeIDStatus defines the observed state of ClusterSpiffeID

@@ -34,6 +34,10 @@ spec:
         spec:
           description: ClusterSpiffeIDSpec defines the desired state of ClusterSpiffeID
           properties:
+            dnsNames:
+              items:
+                type: string
+              type: array
             selector:
               properties:
                 arbitrary:
@@ -62,6 +66,7 @@ spec:
             spiffeId:
               type: string
           required:
+          - dnsNames
           - selector
           - spiffeId
           type: object

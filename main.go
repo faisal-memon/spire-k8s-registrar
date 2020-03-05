@@ -22,9 +22,8 @@ import (
 	"os"
 
 	"github.com/go-logr/logr"
-	"github.com/spiffe/spire/proto/spire/api/registration"
-
 	"github.com/spiffe/go-spiffe/spiffe"
+	"github.com/spiffe/spire/proto/spire/api/registration"
 	spiffeidv1beta1 "github.com/transferwise/spire-k8s-registrar/api/v1beta1"
 	"github.com/transferwise/spire-k8s-registrar/controllers"
 	"google.golang.org/grpc"
@@ -53,7 +52,6 @@ func init() {
 }
 
 func main() {
-	fmt.Println("Parsing config")
 	flag.Parse()
 
 	config, err := LoadConfig(*configFlag)
@@ -86,23 +84,15 @@ func main() {
 		os.Exit(1)
 	}
 
-	if err = (&controllers.ClusterSpiffeIDReconciler{
-		Client: mgr.GetClient(),
-		Log:    ctrl.Log.WithName("controllers").WithName("ClusterSpiffeID"),
-		Scheme: mgr.GetScheme(),
-	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "ClusterSpiffeID")
-		os.Exit(1)
-	}
-	if err = (&controllers.SpireEntryReconciler{
+	if err = (&controllers.SpiffeIDReconciler{
 		Client:      mgr.GetClient(),
-		Log:         ctrl.Log.WithName("controllers").WithName("SpireEntry"),
+		Log:         ctrl.Log.WithName("controllers").WithName("SpiffeID"),
 		Scheme:      mgr.GetScheme(),
 		SpireClient: spireClient,
 		Cluster:     config.Cluster,
 		TrustDomain: config.TrustDomain,
 	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "SpireEntry")
+		setupLog.Error(err, "unable to create controller", "controller", "SpiffeID")
 		os.Exit(1)
 	}
 	if config.PodController {
@@ -125,6 +115,14 @@ func main() {
 			Value:       value,
 		}).SetupWithManager(mgr); err != nil {
 			setupLog.Error(err, "unable to create controller", "controller", "Pod")
+			os.Exit(1)
+		}
+		if err = (&controllers.EndpointReconciler{
+			Client: mgr.GetClient(),
+			Log:    ctrl.Log.WithName("controllers").WithName("Pod"),
+			Scheme: mgr.GetScheme(),
+		}).SetupWithManager(mgr); err != nil {
+			setupLog.Error(err, "unable to create controller", "controller", "Endpoint")
 			os.Exit(1)
 		}
 	}

@@ -19,15 +19,16 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
-	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	"net/url"
 	"path"
+	// "reflect"
 
 	"github.com/go-logr/logr"
 	"github.com/spiffe/spire/proto/spire/api/registration"
 	"github.com/spiffe/spire/proto/spire/common"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -35,8 +36,8 @@ import (
 	spiffeidv1beta1 "github.com/transferwise/spire-k8s-registrar/api/v1beta1"
 )
 
-// SpireEntryReconciler reconciles a SpireEntry object
-type SpireEntryReconciler struct {
+// SpiffeIDReconciler reconciles a SpiffeID object
+type SpiffeIDReconciler struct {
 	client.Client
 	Log         logr.Logger
 	Scheme      *runtime.Scheme
@@ -49,7 +50,7 @@ type SpireEntryReconciler struct {
 // +kubebuilder:rbac:groups=spiffeid.spiffe.io,resources=spireentries,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=spiffeid.spiffe.io,resources=spireentries/status,verbs=get;update;patch
 
-func (r *SpireEntryReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
+func (r *SpiffeIDReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 	ctx := context.Background()
 	log := r.Log.WithValues("spireentry", req.NamespacedName)
 
@@ -60,10 +61,10 @@ func (r *SpireEntryReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) 
 		}
 	}
 
-	var spireEntry spiffeidv1beta1.SpireEntry
+	var spireEntry spiffeidv1beta1.SpiffeID
 	if err := r.Get(ctx, req.NamespacedName, &spireEntry); err != nil {
 		if !k8serrors.IsNotFound(err) {
-			log.Error(err, "unable to fetch SpireEntry")
+			log.Error(err, "unable to fetch SpiffeID")
 		}
 		// we'll ignore not-found errors, since they can't be fixed by an immediate
 		// requeue (we'll need to wait for a new notification), and we can get them
@@ -97,7 +98,7 @@ func (r *SpireEntryReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) 
 		return ctrl.Result{}, nil
 	}
 
-	entryId, err := r.getOrCreateSpireEntry(ctx, log, &spireEntry)
+	entryId, err := r.getOrCreateSpiffeID(ctx, log, &spireEntry)
 	if err != nil {
 		log.Error(err, "unable to create spire entry", "request", req)
 		return ctrl.Result{}, err
@@ -114,21 +115,52 @@ func (r *SpireEntryReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) 
 		}
 		spireEntry.Status.EntryId = &entryId
 		if err := r.Status().Update(ctx, &spireEntry); err != nil {
-			log.Error(err, "unable to update SpireEntry status")
+			log.Error(err, "unable to update SpiffeID status")
 			return ctrl.Result{}, err
 		}
 	}
 
+	currentEntry, err := r.SpireClient.FetchEntry(ctx, &registration.RegistrationEntryID{Id: entryId})
+	if err != nil {
+		log.Error(err, "unable to fetch current SpiffeID entry")
+		return ctrl.Result{}, err
+	}
+
+	if !sameStringSlice(currentEntry.DnsNames, spireEntry.Spec.DnsNames) {
+		log.Info("Updating Spire Entry")
+
+		_, err = r.SpireClient.DeleteEntry(ctx, &registration.RegistrationEntryID{Id: entryId})
+		if err != nil {
+			log.Error(err, "unable to delete current SpiffeID entry for update")
+			return ctrl.Result{}, err
+		}
+
+		newEntryId, err := r.SpireClient.CreateEntry(ctx, r.createCommonRegistrationEntry(spireEntry))
+		if err != nil {
+			log.Error(err, "unable to create new SpiffeID entry for update")
+			return ctrl.Result{}, err
+		}
+		spireEntry.Status.EntryId = &newEntryId.Id
+
+		/*
+			_, err = r.SpireClient.UpdateEntry(ctx, &registration.UpdateEntryRequest{
+				Entry: r.createCommonRegistrationEntry(spireEntry),
+			})
+			if err != nil {
+				log.Error(err, "unable to update SpiffeID entry")
+				return ctrl.Result{}, err
+			}*/
+	}
 	return ctrl.Result{}, nil
 }
 
-func (r *SpireEntryReconciler) SetupWithManager(mgr ctrl.Manager) error {
+func (r *SpiffeIDReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&spiffeidv1beta1.SpireEntry{}).
+		For(&spiffeidv1beta1.SpiffeID{}).
 		Complete(r)
 }
 
-func (r *SpireEntryReconciler) ensureDeleted(ctx context.Context, reqLogger logr.Logger, entryId string) error {
+func (r *SpiffeIDReconciler) ensureDeleted(ctx context.Context, reqLogger logr.Logger, entryId string) error {
 	if _, err := r.SpireClient.DeleteEntry(ctx, &registration.RegistrationEntryID{Id: entryId}); err != nil {
 		if status.Code(err) != codes.NotFound {
 			if status.Code(err) == codes.Internal {
@@ -162,7 +194,7 @@ func ServerID(trustDomain string) string {
 	return ServerURI(trustDomain).String()
 }
 
-func (r *SpireEntryReconciler) makeID(pathFmt string, pathArgs ...interface{}) string {
+func (r *SpiffeIDReconciler) makeID(pathFmt string, pathArgs ...interface{}) string {
 	id := url.URL{
 		Scheme: "spiffe",
 		Host:   r.TrustDomain,
@@ -171,11 +203,11 @@ func (r *SpireEntryReconciler) makeID(pathFmt string, pathArgs ...interface{}) s
 	return id.String()
 }
 
-func (r *SpireEntryReconciler) nodeID() string {
+func (r *SpiffeIDReconciler) nodeID() string {
 	return r.makeID("spire-k8s-operator/%s/node", r.Cluster)
 }
 
-func (r *SpireEntryReconciler) makeMyId(ctx context.Context, reqLogger logr.Logger) error {
+func (r *SpiffeIDReconciler) makeMyId(ctx context.Context, reqLogger logr.Logger) error {
 	myId := r.nodeID()
 	reqLogger.Info("Initializing operator parent ID.")
 	_, err := r.SpireClient.CreateEntry(ctx, &common.RegistrationEntry{
@@ -198,7 +230,7 @@ func (r *SpireEntryReconciler) makeMyId(ctx context.Context, reqLogger logr.Logg
 
 var ExistingEntryNotFoundError = errors.New("no existing matching entry found")
 
-func (r *SpireEntryReconciler) getExistingEntry(ctx context.Context, reqLogger logr.Logger, id string, selectors []*common.Selector) (string, error) {
+func (r *SpiffeIDReconciler) getExistingEntry(ctx context.Context, reqLogger logr.Logger, id string, selectors []*common.Selector) (string, error) {
 	entries, err := r.SpireClient.ListByParentID(ctx, &registration.ParentID{
 		Id: *r.myId,
 	})
@@ -233,7 +265,52 @@ func (r *SpireEntryReconciler) getExistingEntry(ctx context.Context, reqLogger l
 	return "", ExistingEntryNotFoundError
 }
 
-func (r *SpireEntryReconciler) getOrCreateSpireEntry(ctx context.Context, reqLogger logr.Logger, instance *spiffeidv1beta1.SpireEntry) (string, error) {
+func (r *SpiffeIDReconciler) createCommonRegistrationEntry(instance spiffeidv1beta1.SpiffeID) *common.RegistrationEntry {
+	selectors := make([]*common.Selector, 0, len(instance.Spec.Selector.PodLabel))
+	for k, v := range instance.Spec.Selector.PodLabel {
+		selectors = append(selectors, &common.Selector{
+			Type:  "k8s",
+			Value: fmt.Sprintf("pod-label:%s:%s", k, v),
+		})
+	}
+	if len(instance.Spec.Selector.PodName) > 0 {
+		selectors = append(selectors, &common.Selector{
+			Type:  "k8s",
+			Value: fmt.Sprintf("pod-name:%s", instance.Spec.Selector.PodName),
+		})
+	}
+	if len(instance.Spec.Selector.PodUid) > 0 {
+		selectors = append(selectors, &common.Selector{
+			Type:  "k8s",
+			Value: fmt.Sprintf("pod-uid:%s", instance.Spec.Selector.PodUid),
+		})
+	}
+	if len(instance.Spec.Selector.Namespace) > 0 {
+		selectors = append(selectors, &common.Selector{
+			Type:  "k8s",
+			Value: fmt.Sprintf("ns:%s", instance.Spec.Selector.Namespace),
+		})
+	}
+	if len(instance.Spec.Selector.ServiceAccount) > 0 {
+		selectors = append(selectors, &common.Selector{
+			Type:  "k8s",
+			Value: fmt.Sprintf("sa:%s", instance.Spec.Selector.ServiceAccount),
+		})
+	}
+	for _, v := range instance.Spec.Selector.Arbitrary {
+		selectors = append(selectors, &common.Selector{Value: v})
+	}
+
+	return &common.RegistrationEntry{
+		Selectors: selectors,
+		ParentId:  *r.myId,
+		SpiffeId:  instance.Spec.SpiffeId,
+		DnsNames:  instance.Spec.DnsNames,
+		EntryId:   *instance.Status.EntryId,
+	}
+}
+
+func (r *SpiffeIDReconciler) getOrCreateSpiffeID(ctx context.Context, reqLogger logr.Logger, instance *spiffeidv1beta1.SpiffeID) (string, error) {
 
 	// TODO: sanitize!
 	selectors := make([]*common.Selector, 0, len(instance.Spec.Selector.PodLabel))
@@ -277,6 +354,7 @@ func (r *SpireEntryReconciler) getOrCreateSpireEntry(ctx context.Context, reqLog
 		Selectors: selectors,
 		ParentId:  *r.myId,
 		SpiffeId:  spiffeId,
+		DnsNames:  instance.Spec.DnsNames,
 	})
 	if err != nil {
 		if status.Code(err) == codes.AlreadyExists {
@@ -295,6 +373,32 @@ func (r *SpireEntryReconciler) getOrCreateSpireEntry(ctx context.Context, reqLog
 
 	return regEntryId.Id, nil
 
+}
+
+func sameStringSlice(x, y []string) bool {
+	if len(x) != len(y) {
+		return false
+	}
+	// create a map of string -> int
+	diff := make(map[string]int, len(x))
+	for _, _x := range x {
+		// 0 value for int is 0, so just increment a counter for the string
+		diff[_x]++
+	}
+	for _, _y := range y {
+		// If the string _y is not in diff bail out early
+		if _, ok := diff[_y]; !ok {
+			return false
+		}
+		diff[_y] -= 1
+		if diff[_y] == 0 {
+			delete(diff, _y)
+		}
+	}
+	if len(diff) == 0 {
+		return true
+	}
+	return false
 }
 
 // Helper functions to check and remove string from a slice of strings.

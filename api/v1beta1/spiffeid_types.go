@@ -38,17 +38,18 @@ type Selector struct {
 	Arbitrary []string `json:"arbitrary,omitempty"`
 }
 
-// SpireEntrySpec defines the desired state of SpireEntry
-type SpireEntrySpec struct {
+// SpiffeIDSpec defines the desired state of SpiffeID
+type SpiffeIDSpec struct {
 	// INSERT ADDITIONAL SPEC FIELDS - desired state of cluster
 	// Important: Run "make" to regenerate code after modifying this file
 
 	SpiffeId string   `json:"spiffeId"`
 	Selector Selector `json:"selector"`
+	DnsNames []string `json:"dnsNames"`
 }
 
-// SpireEntryStatus defines the observed state of SpireEntry
-type SpireEntryStatus struct {
+// SpiffeIDStatus defines the observed state of SpiffeID
+type SpiffeIDStatus struct {
 	// INSERT ADDITIONAL STATUS FIELD - define observed state of cluster
 	// Important: Run "make" to regenerate code after modifying this file
 	EntryId *string `json:"entryId,omitempty"`
@@ -58,24 +59,24 @@ type SpireEntryStatus struct {
 // +kubebuilder:resource:scope=Cluster
 // +kubebuilder:subresource:status
 
-// SpireEntry is the Schema for the spireentries API
-type SpireEntry struct {
+// SpiffeID is the Schema for the spireentries API
+type SpiffeID struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
 
-	Spec   SpireEntrySpec   `json:"spec,omitempty"`
-	Status SpireEntryStatus `json:"status,omitempty"`
+	Spec   SpiffeIDSpec   `json:"spec,omitempty"`
+	Status SpiffeIDStatus `json:"status,omitempty"`
 }
 
 // +kubebuilder:object:root=true
 
-// SpireEntryList contains a list of SpireEntry
-type SpireEntryList struct {
+// SpiffeIDList contains a list of SpiffeID
+type SpiffeIDList struct {
 	metav1.TypeMeta `json:",inline"`
 	metav1.ListMeta `json:"metadata,omitempty"`
-	Items           []SpireEntry `json:"items"`
+	Items           []SpiffeID `json:"items"`
 }
 
 func init() {
-	SchemeBuilder.Register(&SpireEntry{}, &SpireEntryList{})
+	SchemeBuilder.Register(&SpiffeID{}, &SpiffeIDList{})
 }

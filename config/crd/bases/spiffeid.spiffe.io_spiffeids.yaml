@@ -6,20 +6,20 @@ metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.2.4
   creationTimestamp: null
-  name: spireentries.spiffeid.spiffe.io
+  name: spiffeids.spiffeid.spiffe.io
 spec:
   group: spiffeid.spiffe.io
   names:
-    kind: SpireEntry
-    listKind: SpireEntryList
-    plural: spireentries
-    singular: spireentry
+    kind: SpiffeID
+    listKind: SpiffeIDList
+    plural: spiffeids
+    singular: spiffeid
   scope: Cluster
   subresources:
     status: {}
   validation:
     openAPIV3Schema:
-      description: SpireEntry is the Schema for the spireentries API
+      description: SpiffeID is the Schema for the spireentries API
       properties:
         apiVersion:
           description: 'APIVersion defines the versioned schema of this representation
@@ -34,8 +34,12 @@ spec:
         metadata:
           type: object
         spec:
-          description: SpireEntrySpec defines the desired state of SpireEntry
+          description: SpiffeIDSpec defines the desired state of SpiffeID
           properties:
+            dnsNames:
+              items:
+                type: string
+              type: array
             selector:
               properties:
                 arbitrary:
@@ -64,11 +68,12 @@ spec:
             spiffeId:
               type: string
           required:
+          - dnsNames
           - selector
           - spiffeId
           type: object
         status:
-          description: SpireEntryStatus defines the observed state of SpireEntry
+          description: SpiffeIDStatus defines the observed state of SpiffeID
           properties:
             entryId:
               description: 'INSERT ADDITIONAL STATUS FIELD - define observed state
