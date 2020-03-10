@@ -56,7 +56,7 @@ type SpiffeIDStatus struct {
 }
 
 // +kubebuilder:object:root=true
-// +kubebuilder:resource:scope=Cluster
+// +kubebuilder:resource:scope=Namespaced
 // +kubebuilder:subresource:status
 
 // SpiffeID is the Schema for the spireentries API

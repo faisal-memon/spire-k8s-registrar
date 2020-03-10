@@ -26,12 +26,9 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
-	// metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
-	//"k8s.io/client-go/kubernetes"
-	//"k8s.io/client-go/rest"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -58,6 +55,7 @@ type PodReconciler struct {
 // +kubebuilder:rbac:groups=core,resources=pods,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=core,resources=pods/status,verbs=get;update;patch
 
+// Reconcile creates a new SPIFFE ID when pods are created
 func (r *PodReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 	ctx := context.Background()
 	log := r.Log.WithValues("pod", req.NamespacedName)
@@ -98,7 +96,7 @@ func (r *PodReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 	existing := &spiffeidv1beta1.SpiffeID{}
 	if err := r.Get(ctx, types.NamespacedName{Name: spiffeidname}, existing); err != nil {
 		if !errors.IsNotFound(err) {
-			log.Error(err, "Failed to get ClusterSpiffeID", "name", spiffeidname)
+			log.Error(err, "Failed to get SpiffeID", "name", spiffeidname)
 			return ctrl.Result{}, err
 		}
 	}
@@ -159,6 +157,9 @@ type EndpointReconciler struct {
 	Scheme *runtime.Scheme
 }
 
+// +kubebuilder:rbac:groups=core,resources=endpoints,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=core,resources=endpoints/status,verbs=get;update;patch
+
 func (e *EndpointReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 	var endpoints corev1.Endpoints
 
@@ -175,6 +176,31 @@ func (e *EndpointReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
+	myFinalizerName := "spire.finalizers.spireentry.spiffeid.spiffe.io/pods"
+	if endpoints.ObjectMeta.DeletionTimestamp.IsZero() {
+		if !containsString(endpoints.GetFinalizers(), myFinalizerName) {
+			endpoints.SetFinalizers(append(endpoints.GetFinalizers(), myFinalizerName))
+			if err := e.Update(ctx, &endpoints); err != nil {
+				return ctrl.Result{}, err
+			}
+		}
+	} else {
+		if containsString(endpoints.GetFinalizers(), myFinalizerName) {
+			// our finalizer is present, so lets handle any external dependency
+			if err := e.deleteExternalResources(ctx, log, endpoints); err != nil {
+				return ctrl.Result{}, err
+			}
+
+			// remove our finalizer from the list and update it.
+			endpoints.SetFinalizers(removeString(endpoints.GetFinalizers(), myFinalizerName))
+			if err := e.Update(ctx, &endpoints); err != nil {
+				return ctrl.Result{}, err
+			}
+		}
+
+		return ctrl.Result{}, nil
+	}
+
 	svcName := endpoints.ObjectMeta.Name
 
 	for _, subset := range endpoints.Subsets {
@@ -189,8 +215,11 @@ func (e *EndpointReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 					}
 				}
 				if existing != nil {
-					existing.Spec.DnsNames = append([]string{svcName}, existing.Spec.DnsNames...)
-					e.Update(ctx, existing)
+					log.Info("adding svc name to dns names entry", "service", svcName)
+					if !contains(existing.Spec.DnsNames, svcName) {
+						existing.Spec.DnsNames = append([]string{svcName}, existing.Spec.DnsNames...)
+						e.Update(ctx, existing)
+					}
 				}
 			}
 		}
@@ -198,9 +227,51 @@ func (e *EndpointReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 
 	return ctrl.Result{}, nil
 }
+func (e *EndpointReconciler) deleteExternalResources(ctx context.Context, log logr.Logger, endpoints corev1.Endpoints) error {
+	svcName := endpoints.ObjectMeta.Name
+
+	for _, subset := range endpoints.Subsets {
+		for _, address := range subset.Addresses {
+			if address.TargetRef != nil {
+				spiffeidname := fmt.Sprintf("spire-operator-%s", address.TargetRef.UID)
+				existing := &spiffeidv1beta1.SpiffeID{}
+				if err := e.Get(ctx, types.NamespacedName{Name: spiffeidname, Namespace: address.TargetRef.Namespace}, existing); err != nil {
+					if !errors.IsNotFound(err) {
+						log.Error(err, "Failed to get SpiffeID", "name", spiffeidname)
+						continue
+					}
+				}
+				if existing != nil {
+					log.Info("deleting svc name from dns names entry", "service", svcName)
+					i := 0 // output index
+					for _, dnsName := range existing.Spec.DnsNames {
+						if dnsName != svcName {
+							// copy and increment index
+							existing.Spec.DnsNames[i] = dnsName
+							i++
+						}
+					}
+					existing.Spec.DnsNames = existing.Spec.DnsNames[:i]
+					e.Update(ctx, existing)
+				}
+			}
+		}
+	}
+
+	return nil
+}
 
 func (e *EndpointReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&corev1.Endpoints{}).
 		Complete(e)
+}
+
+func contains(s []string, e string) bool {
+	for _, a := range s {
+		if a == e {
+			return true
+		}
+	}
+	return false
 }

@@ -14,7 +14,7 @@ spec:
     listKind: SpiffeIDList
     plural: spiffeids
     singular: spiffeid
-  scope: Cluster
+  scope: Namespaced
   subresources:
     status: {}
   validation:

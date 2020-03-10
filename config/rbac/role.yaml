@@ -9,6 +9,26 @@ rules:
 - apiGroups:
   - ""
   resources:
+  - endpoints
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - ""
+  resources:
+  - endpoints/status
+  verbs:
+  - get
+  - patch
+  - update
+- apiGroups:
+  - ""
+  resources:
   - pods
   verbs:
   - create
@@ -29,7 +49,7 @@ rules:
 - apiGroups:
   - spiffeid.spiffe.io
   resources:
-  - clusterspiffeids
+  - spiffeids
   verbs:
   - create
   - delete
@@ -41,27 +61,7 @@ rules:
 - apiGroups:
   - spiffeid.spiffe.io
   resources:
-  - clusterspiffeids/status
-  verbs:
-  - get
-  - patch
-  - update
-- apiGroups:
-  - spiffeid.spiffe.io
-  resources:
-  - spireentries
-  verbs:
-  - create
-  - delete
-  - get
-  - list
-  - patch
-  - update
-  - watch
-- apiGroups:
-  - spiffeid.spiffe.io
-  resources:
-  - spireentries/status
+  - spiffeids/status
   verbs:
   - get
   - patch

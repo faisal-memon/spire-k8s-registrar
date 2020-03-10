@@ -47,8 +47,8 @@ type SpiffeIDReconciler struct {
 	Cluster     string
 }
 
-// +kubebuilder:rbac:groups=spiffeid.spiffe.io,resources=spireentries,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=spiffeid.spiffe.io,resources=spireentries/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=spiffeid.spiffe.io,resources=spiffeids,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=spiffeid.spiffe.io,resources=spiffeids/status,verbs=get;update;patch
 
 func (r *SpiffeIDReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 	ctx := context.Background()
@@ -61,8 +61,8 @@ func (r *SpiffeIDReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 		}
 	}
 
-	var spireEntry spiffeidv1beta1.SpiffeID
-	if err := r.Get(ctx, req.NamespacedName, &spireEntry); err != nil {
+	var spiffeID spiffeidv1beta1.SpiffeID
+	if err := r.Get(ctx, req.NamespacedName, &spiffeID); err != nil {
 		if !k8serrors.IsNotFound(err) {
 			log.Error(err, "unable to fetch SpiffeID")
 		}
@@ -73,48 +73,49 @@ func (r *SpiffeIDReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 	}
 
 	myFinalizerName := "spire.finalizers.spireentry.spiffeid.spiffe.io"
-	if spireEntry.ObjectMeta.DeletionTimestamp.IsZero() {
-		if !containsString(spireEntry.GetFinalizers(), myFinalizerName) {
-			spireEntry.SetFinalizers(append(spireEntry.GetFinalizers(), myFinalizerName))
-			if err := r.Update(ctx, &spireEntry); err != nil {
+	if spiffeID.ObjectMeta.DeletionTimestamp.IsZero() {
+		if !containsString(spiffeID.GetFinalizers(), myFinalizerName) {
+			spiffeID.SetFinalizers(append(spiffeID.GetFinalizers(), myFinalizerName))
+			if err := r.Update(ctx, &spiffeID); err != nil {
 				return ctrl.Result{}, err
 			}
 		}
 	} else {
-		if containsString(spireEntry.GetFinalizers(), myFinalizerName) {
+		if containsString(spiffeID.GetFinalizers(), myFinalizerName) {
 			// our finalizer is present, so lets handle any external dependency
-			if err := r.ensureDeleted(ctx, log, *spireEntry.Status.EntryId); err != nil {
-				log.Error(err, "unable to delete spire entry", "entryid", *spireEntry.Status.EntryId)
+			if err := r.ensureDeleted(ctx, log, *spiffeID.Status.EntryId); err != nil {
+				log.Error(err, "unable to delete spire entry", "entryid", *spiffeID.Status.EntryId)
 				return ctrl.Result{}, err
 			}
 
 			// remove our finalizer from the list and update it.
-			spireEntry.SetFinalizers(removeString(spireEntry.GetFinalizers(), myFinalizerName))
-			if err := r.Update(ctx, &spireEntry); err != nil {
+			spiffeID.SetFinalizers(removeString(spiffeID.GetFinalizers(), myFinalizerName))
+			if err := r.Update(ctx, &spiffeID); err != nil {
 				return ctrl.Result{}, err
 			}
-			log.Info("Finalized entry", "entry", spireEntry.Name)
+			log.Info("Finalized entry", "entry", spiffeID.Name)
 		}
 		return ctrl.Result{}, nil
 	}
 
-	entryId, err := r.getOrCreateSpiffeID(ctx, log, &spireEntry)
+	entryId, err := r.getOrCreateSpiffeID(ctx, log, &spiffeID)
 	if err != nil {
-		log.Error(err, "unable to create spire entry", "request", req)
+		log.Error(err, "unable to get or create spire entry", "request", req)
 		return ctrl.Result{}, err
 	}
-	oldEntryId := spireEntry.Status.EntryId
+
+	oldEntryId := spiffeID.Status.EntryId
 	if oldEntryId == nil || *oldEntryId != entryId {
 		// We need to update the Status field
 		if oldEntryId != nil {
 			// entry resource must have been modified, delete the hanging one
-			if err := r.ensureDeleted(ctx, log, *spireEntry.Status.EntryId); err != nil {
-				log.Error(err, "unable to delete old spire entry", "entryid", *spireEntry.Status.EntryId)
+			if err := r.ensureDeleted(ctx, log, *spiffeID.Status.EntryId); err != nil {
+				log.Error(err, "unable to delete old spire entry", "entryid", *spiffeID.Status.EntryId)
 				return ctrl.Result{}, err
 			}
 		}
-		spireEntry.Status.EntryId = &entryId
-		if err := r.Status().Update(ctx, &spireEntry); err != nil {
+		spiffeID.Status.EntryId = &entryId
+		if err := r.Status().Update(ctx, &spiffeID); err != nil {
 			log.Error(err, "unable to update SpiffeID status")
 			return ctrl.Result{}, err
 		}
@@ -126,31 +127,29 @@ func (r *SpiffeIDReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 		return ctrl.Result{}, err
 	}
 
-	if !sameStringSlice(currentEntry.DnsNames, spireEntry.Spec.DnsNames) {
+	if !sameStringSlice(currentEntry.DnsNames, spiffeID.Spec.DnsNames) {
 		log.Info("Updating Spire Entry")
 
-		_, err = r.SpireClient.DeleteEntry(ctx, &registration.RegistrationEntryID{Id: entryId})
-		if err != nil {
-			log.Error(err, "unable to delete current SpiffeID entry for update")
+		// SPIRE doesn't push new SVIDs on UpdateEntry yet, so we have to delete the old
+		// one and create a new one.
+		if err := r.ensureDeleted(ctx, log, entryId); err != nil {
+			log.Error(err, "unable to delete old spire entry", "entryid", entryId)
 			return ctrl.Result{}, err
 		}
 
-		newEntryId, err := r.SpireClient.CreateEntry(ctx, r.createCommonRegistrationEntry(spireEntry))
+		newEntryId, err := r.SpireClient.CreateEntry(ctx, r.createCommonRegistrationEntry(spiffeID))
 		if err != nil {
 			log.Error(err, "unable to create new SpiffeID entry for update")
 			return ctrl.Result{}, err
 		}
-		spireEntry.Status.EntryId = &newEntryId.Id
-
-		/*
-			_, err = r.SpireClient.UpdateEntry(ctx, &registration.UpdateEntryRequest{
-				Entry: r.createCommonRegistrationEntry(spireEntry),
-			})
-			if err != nil {
-				log.Error(err, "unable to update SpiffeID entry")
-				return ctrl.Result{}, err
-			}*/
+		log.Info("Created new entry", "entryID", newEntryId.Id)
+		spiffeID.Status.EntryId = &newEntryId.Id
+		if err := r.Status().Update(ctx, &spiffeID); err != nil {
+			log.Error(err, "unable to update SpiffeID status")
+			return ctrl.Result{}, err
+		}
 	}
+
 	return ctrl.Result{}, nil
 }
 
@@ -306,7 +305,7 @@ func (r *SpiffeIDReconciler) createCommonRegistrationEntry(instance spiffeidv1be
 		ParentId:  *r.myId,
 		SpiffeId:  instance.Spec.SpiffeId,
 		DnsNames:  instance.Spec.DnsNames,
-		EntryId:   *instance.Status.EntryId,
+		//EntryId:   *instance.Status.EntryId,
 	}
 }
 
