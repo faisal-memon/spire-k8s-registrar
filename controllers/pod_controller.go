@@ -153,8 +153,9 @@ func (r *PodReconciler) makeID(pathFmt string, pathArgs ...interface{}) string {
 // EndPointReconciler reconciles a EndPoint object
 type EndpointReconciler struct {
 	client.Client
-	Log    logr.Logger
-	Scheme *runtime.Scheme
+	Log                logr.Logger
+	Scheme             *runtime.Scheme
+	spiffeIDCollection map[string]string
 }
 
 // +kubebuilder:rbac:groups=core,resources=endpoints,verbs=get;list;watch;create;update;patch;delete
@@ -167,42 +168,20 @@ func (e *EndpointReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 	log := e.Log.WithValues("endpoint", req.NamespacedName)
 
 	if err := e.Get(ctx, req.NamespacedName, &endpoints); err != nil {
-		if !errors.IsNotFound(err) {
-			log.Error(err, "unable to fetch Endpoint")
+		if errors.IsNotFound(err) {
+			// Delete event
+			if err := e.deleteExternalResources(ctx, log, req.NamespacedName); err != nil {
+				return ctrl.Result{}, err
+			}
+
+			return ctrl.Result{}, client.IgnoreNotFound(err)
 		}
-		// we'll ignore not-found errors, since they can't be fixed by an immediate
-		// requeue (we'll need to wait for a new notification), and we can get them
-		// on deleted requests.
+
+		log.Error(err, "unable to fetch Endpoints")
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
-	myFinalizerName := "spire.finalizers.spireentry.spiffeid.spiffe.io/pods"
-	if endpoints.ObjectMeta.DeletionTimestamp.IsZero() {
-		if !containsString(endpoints.GetFinalizers(), myFinalizerName) {
-			endpoints.SetFinalizers(append(endpoints.GetFinalizers(), myFinalizerName))
-			if err := e.Update(ctx, &endpoints); err != nil {
-				return ctrl.Result{}, err
-			}
-		}
-	} else {
-		if containsString(endpoints.GetFinalizers(), myFinalizerName) {
-			// our finalizer is present, so lets handle any external dependency
-			if err := e.deleteExternalResources(ctx, log, endpoints); err != nil {
-				return ctrl.Result{}, err
-			}
-
-			// remove our finalizer from the list and update it.
-			endpoints.SetFinalizers(removeString(endpoints.GetFinalizers(), myFinalizerName))
-			if err := e.Update(ctx, &endpoints); err != nil {
-				return ctrl.Result{}, err
-			}
-		}
-
-		return ctrl.Result{}, nil
-	}
-
-	svcName := endpoints.ObjectMeta.Name
-
+	svcName := req.NamespacedName.Name + "." + req.NamespacedName.Namespace
 	for _, subset := range endpoints.Subsets {
 		for _, address := range subset.Addresses {
 			if address.TargetRef != nil {
@@ -210,15 +189,20 @@ func (e *EndpointReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 				existing := &spiffeidv1beta1.SpiffeID{}
 				if err := e.Get(ctx, types.NamespacedName{Name: spiffeidname, Namespace: address.TargetRef.Namespace}, existing); err != nil {
 					if !errors.IsNotFound(err) {
-						log.Error(err, "Failed to get SpiffeID", "name", spiffeidname)
-						continue
+						log.Error(err, "failed to get SpiffeID", "name", spiffeidname)
+						return ctrl.Result{}, err
 					}
+					continue
 				}
 				if existing != nil {
 					log.Info("adding svc name to dns names entry", "service", svcName)
-					if !contains(existing.Spec.DnsNames, svcName) {
+					if !containsString(existing.Spec.DnsNames, svcName) {
 						existing.Spec.DnsNames = append([]string{svcName}, existing.Spec.DnsNames...)
-						e.Update(ctx, existing)
+						e.spiffeIDCollection[svcName] = spiffeidname
+						if err := e.Update(ctx, existing); err != nil {
+							log.Error(err, "unable to add DNS names in SPIFFE ID CRD", "name", spiffeidname)
+							return ctrl.Result{}, err
+						}
 					}
 				}
 			}
@@ -227,51 +211,45 @@ func (e *EndpointReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 
 	return ctrl.Result{}, nil
 }
-func (e *EndpointReconciler) deleteExternalResources(ctx context.Context, log logr.Logger, endpoints corev1.Endpoints) error {
-	svcName := endpoints.ObjectMeta.Name
+func (e *EndpointReconciler) deleteExternalResources(ctx context.Context, log logr.Logger, namespacedName types.NamespacedName) error {
+	svcName := namespacedName.Name + "." + namespacedName.Namespace
+	spiffeidname := e.spiffeIDCollection[svcName]
 
-	for _, subset := range endpoints.Subsets {
-		for _, address := range subset.Addresses {
-			if address.TargetRef != nil {
-				spiffeidname := fmt.Sprintf("spire-operator-%s", address.TargetRef.UID)
-				existing := &spiffeidv1beta1.SpiffeID{}
-				if err := e.Get(ctx, types.NamespacedName{Name: spiffeidname, Namespace: address.TargetRef.Namespace}, existing); err != nil {
-					if !errors.IsNotFound(err) {
-						log.Error(err, "Failed to get SpiffeID", "name", spiffeidname)
-						continue
-					}
-				}
-				if existing != nil {
-					log.Info("deleting svc name from dns names entry", "service", svcName)
-					i := 0 // output index
-					for _, dnsName := range existing.Spec.DnsNames {
-						if dnsName != svcName {
-							// copy and increment index
-							existing.Spec.DnsNames[i] = dnsName
-							i++
-						}
-					}
-					existing.Spec.DnsNames = existing.Spec.DnsNames[:i]
-					e.Update(ctx, existing)
-				}
+	existing := &spiffeidv1beta1.SpiffeID{}
+	if err := e.Get(ctx, types.NamespacedName{Name: spiffeidname, Namespace: namespacedName.Namespace}, existing); err != nil {
+		if !errors.IsNotFound(err) {
+			log.Error(err, "failed to get SpiffeID", "name", spiffeidname)
+			return err
+		}
+
+		return nil
+	}
+	if existing != nil {
+		log.Info("deleting DNS names for", "service", svcName)
+		i := 0 // output index
+		for _, dnsName := range existing.Spec.DnsNames {
+			if dnsName != svcName {
+				// copy and increment index
+				existing.Spec.DnsNames[i] = dnsName
+				i++
 			}
 		}
+
+		existing.Spec.DnsNames = existing.Spec.DnsNames[:i]
+		if err := e.Update(ctx, existing); err != nil {
+			log.Error(err, "unable to delete DNS names in SPIFFE ID CRD", "name", spiffeidname)
+			return err
+		}
+
+		delete(e.spiffeIDCollection, svcName)
 	}
 
 	return nil
 }
 
 func (e *EndpointReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	e.spiffeIDCollection = make(map[string]string)
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&corev1.Endpoints{}).
 		Complete(e)
-}
-
-func contains(s []string, e string) bool {
-	for _, a := range s {
-		if a == e {
-			return true
-		}
-	}
-	return false
 }
