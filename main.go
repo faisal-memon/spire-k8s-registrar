@@ -61,7 +61,7 @@ func main() {
 	}
 
 	ctrl.SetLogger(zap.New(func(o *zap.Options) {
-		o.Development = true
+		o.Development = false
 	}))
 
 	//Connect to Spire Server
@@ -107,20 +107,22 @@ func main() {
 			value = config.PodAnnotation
 		}
 		if err = (&controllers.PodReconciler{
-			Client:      mgr.GetClient(),
-			Log:         ctrl.Log.WithName("controllers").WithName("Pod"),
-			Scheme:      mgr.GetScheme(),
-			TrustDomain: config.TrustDomain,
-			Mode:        mode,
-			Value:       value,
+			Client:             mgr.GetClient(),
+			Log:                ctrl.Log.WithName("controllers").WithName("Pod"),
+			Scheme:             mgr.GetScheme(),
+			TrustDomain:        config.TrustDomain,
+			Mode:               mode,
+			Value:              value,
+			DisabledNamespaces: config.DisabledNamespaces,
 		}).SetupWithManager(mgr); err != nil {
 			setupLog.Error(err, "unable to create controller", "controller", "Pod")
 			os.Exit(1)
 		}
 		if err = (&controllers.EndpointReconciler{
-			Client: mgr.GetClient(),
-			Log:    ctrl.Log.WithName("controllers").WithName("Pod"),
-			Scheme: mgr.GetScheme(),
+			Client:             mgr.GetClient(),
+			Log:                ctrl.Log.WithName("controllers").WithName("Pod"),
+			Scheme:             mgr.GetScheme(),
+			DisabledNamespaces: config.DisabledNamespaces,
 		}).SetupWithManager(mgr); err != nil {
 			setupLog.Error(err, "unable to create controller", "controller", "Endpoint")
 			os.Exit(1)

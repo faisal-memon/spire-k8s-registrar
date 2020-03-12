@@ -238,27 +238,27 @@ func (r *SpiffeIDReconciler) getExistingEntry(ctx context.Context, reqLogger log
 		return "", err
 	}
 
-	selectorMap := map[string]map[string]bool{}
+	selectorMap := map[string]bool{}
 	for _, sel := range selectors {
-		if _, ok := selectorMap[sel.Type]; !ok {
-			selectorMap[sel.Type] = make(map[string]bool)
-		}
-		selectorMap[sel.Type][sel.Value] = true
+		key := sel.Type + ":" + sel.Value
+		selectorMap[key] = true
 	}
 	for _, entry := range entries.Entries {
 		if entry.GetSpiffeId() == id {
 			if len(entry.GetSelectors()) != len(selectors) {
 				continue
 			}
+			found := true
 			for _, sel := range entry.GetSelectors() {
-				if _, ok := selectorMap[sel.Type]; !ok {
-					continue
-				}
-				if _, ok := selectorMap[sel.Type][sel.Value]; !ok {
-					continue
+				key := sel.Type + ":" + sel.Value
+				if _, ok := selectorMap[key]; !ok {
+					found = false
+					break
 				}
 			}
-			return entry.GetEntryId(), nil
+			if found {
+				return entry.GetEntryId(), nil
+			}
 		}
 	}
 	return "", ExistingEntryNotFoundError

@@ -13,17 +13,18 @@ const (
 )
 
 type Config struct {
-	Cluster          string `hcl:"cluster"`
-	LogLevel         string `hcl:"log_level"`
-	LogPath          string `hcl:"log_path"`
-	MetricsAddr      string `hcl:"metrics_addr"`
-	ServerSocketPath string `hcl:"server_socket_path"`
-	ServerAddress    string `hcl:"server_address"`
-	TrustDomain      string `hcl:"trust_domain"`
-	PodController    bool   `hcl:"pod_controller"`
-	PodLabel         string `hcl:"pod_label"`
-	PodAnnotation    string `hcl:"pod_annotation"`
-	LeaderElection   bool   `hcl:"leader_election"`
+	Cluster            string   `hcl:"cluster"`
+	LogLevel           string   `hcl:"log_level"`
+	LogPath            string   `hcl:"log_path"`
+	MetricsAddr        string   `hcl:"metrics_addr"`
+	ServerSocketPath   string   `hcl:"server_socket_path"`
+	ServerAddress      string   `hcl:"server_address"`
+	TrustDomain        string   `hcl:"trust_domain"`
+	PodController      bool     `hcl:"pod_controller"`
+	PodLabel           string   `hcl:"pod_label"`
+	PodAnnotation      string   `hcl:"pod_annotation"`
+	LeaderElection     bool     `hcl:"leader_election"`
+	DisabledNamespaces []string `hcl:"disabled_namespaces"`
 }
 
 func LoadConfig(path string) (*Config, error) {
@@ -46,6 +47,9 @@ func ParseConfig(hclConfig string) (*Config, error) {
 	if c.MetricsAddr == "" {
 		c.MetricsAddr = defaultMetricsAddr
 	}
+	if c.DisabledNamespaces == nil {
+		c.DisabledNamespaces = defaultNamespaces()
+	}
 	if c.Cluster == "" {
 		return nil, errs.New("cluster must be specified")
 	}
@@ -55,6 +59,14 @@ func ParseConfig(hclConfig string) (*Config, error) {
 	if c.TrustDomain == "" {
 		return nil, errs.New("trust_domain must be specified")
 	}
+	if c.PodLabel != "" && c.PodAnnotation != "" {
+		return nil, errs.New("workload registration mode specification is incorrect, can't specify both pod_label and pod_annotation")
+	}
 
 	return c, nil
+}
+
+func defaultNamespaces() []string {
+	return []string{"kube-system"}
+
 }
