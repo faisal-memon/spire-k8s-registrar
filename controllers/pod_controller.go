@@ -42,15 +42,41 @@ const (
 	PodReconcilerModeAnnotation
 )
 
-// PodReconciler reconciles a Pod object
-type PodReconciler struct {
+type PodController struct {
 	client.Client
+	Mgr                ctrl.Manager
 	Log                logr.Logger
 	Scheme             *runtime.Scheme
 	TrustDomain        string
 	Mode               PodReconcilerMode
 	Value              string
 	DisabledNamespaces []string
+	spiffeIDCollection map[string][]string
+}
+
+func BuildPodControllers(pc *PodController) error {
+	pc.spiffeIDCollection = make(map[string][]string)
+
+	err := ctrl.NewControllerManagedBy(pc.Mgr).
+		For(&corev1.Pod{}).
+		Complete(&PodReconciler{ctlr: pc})
+	if err != nil {
+		return err
+	}
+
+	err = ctrl.NewControllerManagedBy(pc.Mgr).
+		For(&corev1.Endpoints{}).
+		Complete(&EndpointReconciler{ctlr: pc})
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// PodReconciler reconciles a Pod object
+type PodReconciler struct {
+	ctlr *PodController
 }
 
 // +kubebuilder:rbac:groups=core,resources=pods,verbs=get;list;watch;create;update;patch;delete
@@ -61,13 +87,13 @@ func (r *PodReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 	var pod corev1.Pod
 
 	ctx := context.Background()
-	log := r.Log.WithValues("pod", req.NamespacedName)
+	log := r.ctlr.Log.WithValues("pod", req.NamespacedName)
 
-	if containsString(r.DisabledNamespaces, req.NamespacedName.Namespace) {
+	if containsString(r.ctlr.DisabledNamespaces, req.NamespacedName.Namespace) {
 		return ctrl.Result{}, nil
 	}
 
-	if err := r.Get(ctx, req.NamespacedName, &pod); err != nil {
+	if err := r.ctlr.Get(ctx, req.NamespacedName, &pod); err != nil {
 		if !errors.IsNotFound(err) {
 			log.Error(err, "unable to fetch Pod")
 			return ctrl.Result{}, err
@@ -78,21 +104,19 @@ func (r *PodReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
-	spiffeidname := fmt.Sprintf("spire-operator-%s", pod.GetUID())
-
 	spiffeId := ""
-	switch r.Mode {
+	switch r.ctlr.Mode {
 	case PodReconcilerModeServiceAccount:
 		spiffeId = r.makeID("ns/%s/sa/%s", req.Namespace, pod.Spec.ServiceAccountName)
 	case PodReconcilerModeLabel:
-		if val, ok := pod.GetLabels()[r.Value]; ok {
+		if val, ok := pod.GetLabels()[r.ctlr.Value]; ok {
 			spiffeId = r.makeID("%s", val)
 		} else {
 			// No relevant label
 			return ctrl.Result{}, nil
 		}
 	case PodReconcilerModeAnnotation:
-		if val, ok := pod.GetAnnotations()[r.Value]; ok {
+		if val, ok := pod.GetAnnotations()[r.ctlr.Value]; ok {
 			spiffeId = r.makeID("%s", val)
 		} else {
 			// No relevant annotation
@@ -100,17 +124,8 @@ func (r *PodReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 		}
 	}
 
-	existing := &spiffeidv1beta1.SpiffeID{}
-	if err := r.Get(ctx, types.NamespacedName{Name: spiffeidname}, existing); err != nil {
-		if !errors.IsNotFound(err) {
-			log.Error(err, "Failed to get SpiffeID", "name", spiffeidname)
-			return ctrl.Result{}, err
-		}
-	}
-
 	namespaceSpiffeId := &spiffeidv1beta1.SpiffeID{
 		ObjectMeta: v1.ObjectMeta{
-			Name:        spiffeidname,
 			Namespace:   pod.Namespace,
 			Annotations: make(map[string]string),
 		},
@@ -123,15 +138,10 @@ func (r *PodReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 			},
 		},
 	}
-
+	namespaceSpiffeId.ObjectMeta.Name = pod.ObjectMeta.Name + computeHash(&namespaceSpiffeId.Spec, nil)
 	namespaceSpiffeId.Spec.DnsNames = append(namespaceSpiffeId.Spec.DnsNames, pod.Name)
 
-	err := controllerutil.SetControllerReference(&pod, namespaceSpiffeId, r.Scheme)
-	if err != nil {
-		log.Error(err, "Failed to create new SpiffeID", "SpiffeID.Name", namespaceSpiffeId.Name)
-		return ctrl.Result{}, err
-	}
-	err = r.Create(ctx, namespaceSpiffeId)
+	err := r.ctlr.Create(ctx, namespaceSpiffeId)
 	if err != nil {
 		if !errors.IsAlreadyExists(err) {
 			log.Error(err, "Failed to create new SpiffeID", "SpiffeID.Name", namespaceSpiffeId.Name)
@@ -139,19 +149,28 @@ func (r *PodReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 		}
 	}
 
-	return ctrl.Result{}, nil
-}
+	// Set pod as owner of new SPIFFE ID
+	err = controllerutil.SetControllerReference(&pod, namespaceSpiffeId, r.ctlr.Scheme)
+	if err != nil {
+		log.Error(err, "Failed to create new SpiffeID", "SpiffeID.Name", namespaceSpiffeId.Name)
+		return ctrl.Result{}, err
+	}
 
-func (r *PodReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	return ctrl.NewControllerManagedBy(mgr).
-		For(&corev1.Pod{}).
-		Complete(r)
+	// Add label to pod with name of SPIFFE ID
+	pod.ObjectMeta.Labels["spiffe.io/spiffeid"] = namespaceSpiffeId.ObjectMeta.Name
+	err = r.ctlr.Update(ctx, &pod)
+	if err != nil {
+		log.Error(err, "Failed to update pod")
+		return ctrl.Result{}, err
+	}
+
+	return ctrl.Result{}, nil
 }
 
 func (r *PodReconciler) makeID(pathFmt string, pathArgs ...interface{}) string {
 	id := url.URL{
 		Scheme: "spiffe",
-		Host:   r.TrustDomain,
+		Host:   r.ctlr.TrustDomain,
 		Path:   path.Clean(fmt.Sprintf(pathFmt, pathArgs...)),
 	}
 	return id.String()
@@ -159,11 +178,7 @@ func (r *PodReconciler) makeID(pathFmt string, pathArgs ...interface{}) string {
 
 // EndPointReconciler reconciles a EndPoint object
 type EndpointReconciler struct {
-	client.Client
-	Log                logr.Logger
-	Scheme             *runtime.Scheme
-	spiffeIDCollection map[string][]string
-	DisabledNamespaces []string
+	ctlr *PodController
 }
 
 // +kubebuilder:rbac:groups=core,resources=endpoints,verbs=get;list;watch;create;update;patch;delete
@@ -173,13 +188,13 @@ func (e *EndpointReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 	var endpoints corev1.Endpoints
 
 	ctx := context.Background()
-	log := e.Log.WithValues("endpoint", req.NamespacedName)
+	log := e.ctlr.Log.WithValues("endpoint", req.NamespacedName)
 
-	if containsString(e.DisabledNamespaces, req.NamespacedName.Namespace) {
+	if containsString(e.ctlr.DisabledNamespaces, req.NamespacedName.Namespace) {
 		return ctrl.Result{}, nil
 	}
 
-	if err := e.Get(ctx, req.NamespacedName, &endpoints); err != nil {
+	if err := e.ctlr.Get(ctx, req.NamespacedName, &endpoints); err != nil {
 		if errors.IsNotFound(err) {
 			// Delete event
 			if err := e.deleteExternalResources(ctx, log, req.NamespacedName); err != nil {
@@ -197,9 +212,14 @@ func (e *EndpointReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 	for _, subset := range endpoints.Subsets {
 		for _, address := range subset.Addresses {
 			if address.TargetRef != nil {
-				spiffeidname := fmt.Sprintf("spire-operator-%s", address.TargetRef.UID)
+				pod := corev1.Pod{}
+				if err := e.ctlr.Get(ctx, types.NamespacedName{Name: address.TargetRef.Name, Namespace: address.TargetRef.Namespace}, &pod); err != nil {
+					log.Error(err, "Error retreiving pod")
+					return ctrl.Result{}, err
+				}
+				spiffeidname := pod.ObjectMeta.Labels["spiffe.io/spiffeid"]
 				existing := &spiffeidv1beta1.SpiffeID{}
-				if err := e.Get(ctx, types.NamespacedName{Name: spiffeidname, Namespace: address.TargetRef.Namespace}, existing); err != nil {
+				if err := e.ctlr.Get(ctx, types.NamespacedName{Name: spiffeidname, Namespace: address.TargetRef.Namespace}, existing); err != nil {
 					if !errors.IsNotFound(err) {
 						log.Error(err, "failed to get SpiffeID", "name", spiffeidname)
 						return ctrl.Result{}, err
@@ -210,11 +230,11 @@ func (e *EndpointReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 					log.Info("adding DNS names for", "service", svcName)
 					if !containsString(existing.Spec.DnsNames, svcName) {
 						existing.Spec.DnsNames = append([]string{svcName}, existing.Spec.DnsNames...)
-						if e.spiffeIDCollection[svcName] == nil {
-							e.spiffeIDCollection[svcName] = make([]string, 0)
+						if e.ctlr.spiffeIDCollection[svcName] == nil {
+							e.ctlr.spiffeIDCollection[svcName] = make([]string, 0)
 						}
-						e.spiffeIDCollection[svcName] = append(e.spiffeIDCollection[svcName], spiffeidname)
-						if err := e.Update(ctx, existing); err != nil {
+						e.ctlr.spiffeIDCollection[svcName] = append(e.ctlr.spiffeIDCollection[svcName], spiffeidname)
+						if err := e.ctlr.Update(ctx, existing); err != nil {
 							log.Error(err, "unable to add DNS names in SPIFFE ID CRD", "name", spiffeidname)
 							return ctrl.Result{}, err
 						}
@@ -228,10 +248,10 @@ func (e *EndpointReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 }
 func (e *EndpointReconciler) deleteExternalResources(ctx context.Context, log logr.Logger, namespacedName types.NamespacedName) error {
 	svcName := namespacedName.Name + "." + namespacedName.Namespace
-	for _, spiffeidname := range e.spiffeIDCollection[svcName] {
+	for _, spiffeidname := range e.ctlr.spiffeIDCollection[svcName] {
 
 		existing := &spiffeidv1beta1.SpiffeID{}
-		if err := e.Get(ctx, types.NamespacedName{Name: spiffeidname, Namespace: namespacedName.Namespace}, existing); err != nil {
+		if err := e.ctlr.Get(ctx, types.NamespacedName{Name: spiffeidname, Namespace: namespacedName.Namespace}, existing); err != nil {
 			if !errors.IsNotFound(err) {
 				log.Error(err, "failed to get SpiffeID", "name", spiffeidname)
 				return err
@@ -251,20 +271,13 @@ func (e *EndpointReconciler) deleteExternalResources(ctx context.Context, log lo
 			}
 
 			existing.Spec.DnsNames = existing.Spec.DnsNames[:i]
-			if err := e.Update(ctx, existing); err != nil {
+			if err := e.ctlr.Update(ctx, existing); err != nil {
 				log.Error(err, "unable to delete DNS names in SPIFFE ID CRD", "name", spiffeidname)
 				return err
 			}
 
-			delete(e.spiffeIDCollection, svcName)
+			delete(e.ctlr.spiffeIDCollection, svcName)
 		}
 	}
 	return nil
-}
-
-func (e *EndpointReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	e.spiffeIDCollection = make(map[string][]string)
-	return ctrl.NewControllerManagedBy(mgr).
-		For(&corev1.Endpoints{}).
-		Complete(e)
 }

@@ -106,25 +106,18 @@ func main() {
 			mode = controllers.PodReconcilerModeAnnotation
 			value = config.PodAnnotation
 		}
-		if err = (&controllers.PodReconciler{
+		ctlr := &controllers.PodController{
 			Client:             mgr.GetClient(),
-			Log:                ctrl.Log.WithName("controllers").WithName("Pod"),
+			Mgr:                mgr,
+			Log:                ctrl.Log.WithName("controllers"),
 			Scheme:             mgr.GetScheme(),
 			TrustDomain:        config.TrustDomain,
 			Mode:               mode,
 			Value:              value,
 			DisabledNamespaces: config.DisabledNamespaces,
-		}).SetupWithManager(mgr); err != nil {
-			setupLog.Error(err, "unable to create controller", "controller", "Pod")
-			os.Exit(1)
 		}
-		if err = (&controllers.EndpointReconciler{
-			Client:             mgr.GetClient(),
-			Log:                ctrl.Log.WithName("controllers").WithName("Pod"),
-			Scheme:             mgr.GetScheme(),
-			DisabledNamespaces: config.DisabledNamespaces,
-		}).SetupWithManager(mgr); err != nil {
-			setupLog.Error(err, "unable to create controller", "controller", "Endpoint")
+		if err := controllers.BuildPodControllers(ctlr); err != nil {
+			setupLog.Error(err, "unable to create controller")
 			os.Exit(1)
 		}
 	}
