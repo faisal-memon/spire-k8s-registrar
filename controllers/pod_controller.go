@@ -138,10 +138,18 @@ func (r *PodReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 			},
 		},
 	}
-	namespaceSpiffeId.ObjectMeta.Name = pod.ObjectMeta.Name + computeHash(&namespaceSpiffeId.Spec, nil)
+	namespaceSpiffeId.ObjectMeta.Name = pod.ObjectMeta.Name + "-" + computeHash(&namespaceSpiffeId.Spec, nil)
 	namespaceSpiffeId.Spec.DnsNames = append(namespaceSpiffeId.Spec.DnsNames, pod.Name)
 
-	err := r.ctlr.Create(ctx, namespaceSpiffeId)
+	// Set pod as owner of new SPIFFE ID
+	err := controllerutil.SetControllerReference(&pod, namespaceSpiffeId, r.ctlr.Scheme)
+	if err != nil {
+		log.Error(err, "Failed to set pod as owner of new SpiffeID", "SpiffeID.Name", namespaceSpiffeId.Name)
+		return ctrl.Result{}, err
+	}
+
+	// Create SPIFFE ID
+	err = r.ctlr.Create(ctx, namespaceSpiffeId)
 	if err != nil {
 		if !errors.IsAlreadyExists(err) {
 			log.Error(err, "Failed to create new SpiffeID", "SpiffeID.Name", namespaceSpiffeId.Name)
@@ -149,18 +157,11 @@ func (r *PodReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 		}
 	}
 
-	// Set pod as owner of new SPIFFE ID
-	err = controllerutil.SetControllerReference(&pod, namespaceSpiffeId, r.ctlr.Scheme)
-	if err != nil {
-		log.Error(err, "Failed to create new SpiffeID", "SpiffeID.Name", namespaceSpiffeId.Name)
-		return ctrl.Result{}, err
-	}
-
 	// Add label to pod with name of SPIFFE ID
 	pod.ObjectMeta.Labels["spiffe.io/spiffeid"] = namespaceSpiffeId.ObjectMeta.Name
 	err = r.ctlr.Update(ctx, &pod)
 	if err != nil {
-		log.Error(err, "Failed to update pod")
+		log.Error(err, "Failed to update pod with SPIFFE ID label")
 		return ctrl.Result{}, err
 	}
 
@@ -228,8 +229,8 @@ func (e *EndpointReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 				}
 				if existing != nil {
 					log.Info("adding DNS names for", "service", svcName)
-					if !containsString(existing.Spec.DnsNames, svcName) {
-						existing.Spec.DnsNames = append([]string{svcName}, existing.Spec.DnsNames...)
+					if !containsString(existing.Spec.DnsNames[1:], svcName) {
+						existing.Spec.DnsNames = append(existing.Spec.DnsNames, svcName)
 						if e.ctlr.spiffeIDCollection[svcName] == nil {
 							e.ctlr.spiffeIDCollection[svcName] = make([]string, 0)
 						}
