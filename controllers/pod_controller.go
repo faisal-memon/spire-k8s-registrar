@@ -51,11 +51,11 @@ type PodController struct {
 	Mode               PodReconcilerMode
 	Value              string
 	DisabledNamespaces []string
-	spiffeIDCollection map[string][]string
+	svcNametoSpiffeID  map[string][]string
 }
 
 func BuildPodControllers(pc *PodController) error {
-	pc.spiffeIDCollection = make(map[string][]string)
+	pc.svcNametoSpiffeID = make(map[string][]string)
 
 	err := ctrl.NewControllerManagedBy(pc.Mgr).
 		For(&corev1.Pod{}).
@@ -98,6 +98,7 @@ func (r *PodReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 			log.Error(err, "unable to fetch Pod")
 			return ctrl.Result{}, err
 		}
+
 		// we'll ignore not-found errors, since they can't be fixed by an immediate
 		// requeue (we'll need to wait for a new notification), and we can get them
 		// on deleted requests.
@@ -231,10 +232,10 @@ func (e *EndpointReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 					log.Info("adding DNS names for", "service", svcName)
 					if !containsString(existing.Spec.DnsNames[1:], svcName) {
 						existing.Spec.DnsNames = append(existing.Spec.DnsNames, svcName)
-						if e.ctlr.spiffeIDCollection[svcName] == nil {
-							e.ctlr.spiffeIDCollection[svcName] = make([]string, 0)
+						if e.ctlr.svcNametoSpiffeID[svcName] == nil {
+							e.ctlr.svcNametoSpiffeID[svcName] = make([]string, 0)
 						}
-						e.ctlr.spiffeIDCollection[svcName] = append(e.ctlr.spiffeIDCollection[svcName], spiffeidname)
+						e.ctlr.svcNametoSpiffeID[svcName] = append(e.ctlr.svcNametoSpiffeID[svcName], spiffeidname)
 						if err := e.ctlr.Update(ctx, existing); err != nil {
 							log.Error(err, "unable to add DNS names in SPIFFE ID CRD", "name", spiffeidname)
 							return ctrl.Result{}, err
@@ -249,7 +250,7 @@ func (e *EndpointReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 }
 func (e *EndpointReconciler) deleteExternalResources(ctx context.Context, log logr.Logger, namespacedName types.NamespacedName) error {
 	svcName := namespacedName.Name + "." + namespacedName.Namespace
-	for _, spiffeidname := range e.ctlr.spiffeIDCollection[svcName] {
+	for _, spiffeidname := range e.ctlr.svcNametoSpiffeID[svcName] {
 
 		existing := &spiffeidv1beta1.SpiffeID{}
 		if err := e.ctlr.Get(ctx, types.NamespacedName{Name: spiffeidname, Namespace: namespacedName.Namespace}, existing); err != nil {
@@ -277,7 +278,7 @@ func (e *EndpointReconciler) deleteExternalResources(ctx context.Context, log lo
 				return err
 			}
 
-			delete(e.ctlr.spiffeIDCollection, svcName)
+			delete(e.ctlr.svcNametoSpiffeID, svcName)
 		}
 	}
 	return nil

@@ -39,12 +39,13 @@ import (
 // SpiffeIDReconciler reconciles a SpiffeID object
 type SpiffeIDReconciler struct {
 	client.Client
-	Log         logr.Logger
-	Scheme      *runtime.Scheme
-	myId        *string
-	SpireClient registration.RegistrationClient
-	TrustDomain string
-	Cluster     string
+	Log                logr.Logger
+	Scheme             *runtime.Scheme
+	myId               *string
+	SpireClient        registration.RegistrationClient
+	TrustDomain        string
+	Cluster            string
+	spiffeIDCollection map[string]string
 }
 
 // +kubebuilder:rbac:groups=spiffeid.spiffe.io,resources=spiffeids,verbs=get;list;watch;create;update;patch;delete
@@ -65,37 +66,18 @@ func (r *SpiffeIDReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 	if err := r.Get(ctx, req.NamespacedName, &spiffeID); err != nil {
 		if !k8serrors.IsNotFound(err) {
 			log.Error(err, "unable to fetch SpiffeID")
+			return ctrl.Result{}, err
 		}
-		// we'll ignore not-found errors, since they can't be fixed by an immediate
-		// requeue (we'll need to wait for a new notification), and we can get them
-		// on deleted requests.
+
+		// Delete event
+		if err := r.ensureDeleted(ctx, log, r.spiffeIDCollection[req.NamespacedName.String()]); err != nil {
+			log.Error(err, "unable to delete spire entry", "entryid", r.spiffeIDCollection[req.NamespacedName.String()])
+			return ctrl.Result{}, err
+		}
+		delete(r.spiffeIDCollection, req.NamespacedName.String())
+		log.Info("Finalized entry", "entry", req.NamespacedName.String())
+
 		return ctrl.Result{}, client.IgnoreNotFound(err)
-	}
-
-	myFinalizerName := "spire.finalizers.spireentry.spiffeid.spiffe.io"
-	if spiffeID.ObjectMeta.DeletionTimestamp.IsZero() {
-		if !containsString(spiffeID.GetFinalizers(), myFinalizerName) {
-			spiffeID.SetFinalizers(append(spiffeID.GetFinalizers(), myFinalizerName))
-			if err := r.Update(ctx, &spiffeID); err != nil {
-				return ctrl.Result{}, err
-			}
-		}
-	} else {
-		if containsString(spiffeID.GetFinalizers(), myFinalizerName) {
-			// our finalizer is present, so lets handle any external dependency
-			if err := r.ensureDeleted(ctx, log, *spiffeID.Status.EntryId); err != nil {
-				log.Error(err, "unable to delete spire entry", "entryid", *spiffeID.Status.EntryId)
-				return ctrl.Result{}, err
-			}
-
-			// remove our finalizer from the list and update it.
-			spiffeID.SetFinalizers(removeString(spiffeID.GetFinalizers(), myFinalizerName))
-			if err := r.Update(ctx, &spiffeID); err != nil {
-				return ctrl.Result{}, err
-			}
-			log.Info("Finalized entry", "entry", spiffeID.Name)
-		}
-		return ctrl.Result{}, nil
 	}
 
 	entryId, err := r.getOrCreateSpiffeID(ctx, log, &spiffeID)
@@ -142,7 +124,9 @@ func (r *SpiffeIDReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 			log.Error(err, "unable to create new SpiffeID entry for update")
 			return ctrl.Result{}, err
 		}
+		r.spiffeIDCollection[req.NamespacedName.String()] = newEntryId.Id
 		log.Info("Created new entry", "entryID", newEntryId.Id)
+
 		spiffeID.Status.EntryId = &newEntryId.Id
 		if err := r.Status().Update(ctx, &spiffeID); err != nil {
 			log.Error(err, "unable to update SpiffeID status")
@@ -154,6 +138,7 @@ func (r *SpiffeIDReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 }
 
 func (r *SpiffeIDReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	r.spiffeIDCollection = make(map[string]string)
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&spiffeidv1beta1.SpiffeID{}).
 		Complete(r)
@@ -368,6 +353,7 @@ func (r *SpiffeIDReconciler) getOrCreateSpiffeID(ctx context.Context, reqLogger 
 		reqLogger.Error(err, "Failed to create spire entry")
 		return "", err
 	}
+	r.spiffeIDCollection[instance.ObjectMeta.Namespace+"/"+instance.ObjectMeta.Name] = regEntryId.Id
 	reqLogger.Info("Created entry", "entryID", regEntryId.Id, "spiffeID", spiffeId)
 
 	return regEntryId.Id, nil
