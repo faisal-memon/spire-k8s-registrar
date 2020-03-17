@@ -21,7 +21,6 @@ import (
 	"fmt"
 	"net/url"
 	"path"
-	// "reflect"
 
 	"github.com/go-logr/logr"
 	"github.com/spiffe/spire/proto/spire/api/registration"
