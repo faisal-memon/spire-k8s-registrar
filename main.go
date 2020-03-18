@@ -26,6 +26,7 @@ import (
 	"github.com/spiffe/spire/proto/spire/api/registration"
 	spiffeidv1beta1 "github.com/transferwise/spire-k8s-registrar/api/v1beta1"
 	"github.com/transferwise/spire-k8s-registrar/controllers"
+	uzap "go.uber.org/zap"
 	"google.golang.org/grpc"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -60,8 +61,9 @@ func main() {
 		os.Exit(1)
 	}
 
+	atomicLogLevel := ToZap(config.LogLevel)
 	ctrl.SetLogger(zap.New(func(o *zap.Options) {
-		o.Development = false
+		o.Level = &atomicLogLevel
 	}))
 
 	//Connect to Spire Server
@@ -170,4 +172,25 @@ func ConnectSpire(ctx context.Context, log logr.Logger, serverAddress, serverSoc
 	}
 	spireClient := registration.NewRegistrationClient(conn)
 	return spireClient, nil
+}
+
+func ToZap(level string) uzap.AtomicLevel {
+	switch level {
+	case "fatal":
+		return uzap.NewAtomicLevelAt(uzap.FatalLevel)
+	case "panic":
+		return uzap.NewAtomicLevelAt(uzap.PanicLevel)
+	case "error":
+		return uzap.NewAtomicLevelAt(uzap.ErrorLevel)
+	case "warn":
+		return uzap.NewAtomicLevelAt(uzap.WarnLevel)
+	case "warning":
+		return uzap.NewAtomicLevelAt(uzap.WarnLevel)
+	case "info":
+		return uzap.NewAtomicLevelAt(uzap.InfoLevel)
+	case "debug":
+		return uzap.NewAtomicLevelAt(uzap.DebugLevel)
+	default:
+		return uzap.NewAtomicLevelAt(uzap.InfoLevel)
+	}
 }

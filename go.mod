@@ -14,7 +14,7 @@ require (
 	github.com/spiffe/spire/proto/spire v0.9.2
 	github.com/zeebo/errs v1.2.2
 	go.uber.org/atomic v1.4.0 // indirect
-	go.uber.org/zap v1.10.0 // indirect
+	go.uber.org/zap v1.10.0
 	golang.org/x/crypto v0.0.0-20190923035154-9ee001bba392 // indirect
 	google.golang.org/grpc v1.24.0
 	k8s.io/api v0.17.0

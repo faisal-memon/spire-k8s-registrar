@@ -8,8 +8,9 @@ import (
 )
 
 const (
-	defaultLogLevel    = "info"
-	defaultMetricsAddr = ":8080"
+	defaultLogLevel      = "info"
+	defaultMetricsAddr   = ":8080"
+	defaultPodController = true
 )
 
 type Config struct {
@@ -37,6 +38,7 @@ func LoadConfig(path string) (*Config, error) {
 
 func ParseConfig(hclConfig string) (*Config, error) {
 	c := new(Config)
+	c.PodController = defaultPodController
 	if err := hcl.Decode(c, hclConfig); err != nil {
 		return nil, errs.New("unable to decode configuration: %v", err)
 	}

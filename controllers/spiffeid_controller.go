@@ -174,12 +174,12 @@ func (r *SpiffeIDReconciler) makeID(pathFmt string, pathArgs ...interface{}) str
 }
 
 func (r *SpiffeIDReconciler) nodeID() string {
-	return r.makeID("spire-k8s-operator/%s/node", r.Cluster)
+	return r.makeID("spire-k8s-registrar/%s/node", r.Cluster)
 }
 
 func (r *SpiffeIDReconciler) makeMyId(ctx context.Context, reqLogger logr.Logger) error {
 	myId := r.nodeID()
-	reqLogger.Info("Initializing operator parent ID.")
+	reqLogger.Info("Initializing registrar parent ID.")
 	_, err := r.SpireClient.CreateEntry(ctx, &common.RegistrationEntry{
 		Selectors: []*common.Selector{
 			{Type: "k8s_psat", Value: fmt.Sprintf("cluster:%s", r.Cluster)},
@@ -189,11 +189,11 @@ func (r *SpiffeIDReconciler) makeMyId(ctx context.Context, reqLogger logr.Logger
 	})
 	if err != nil {
 		if status.Code(err) != codes.AlreadyExists {
-			reqLogger.Info("Failed to create operator parent ID", "spiffeID", myId)
+			reqLogger.Info("Failed to create registrar parent ID", "spiffeID", myId)
 			return err
 		}
 	}
-	reqLogger.Info("Initialized operator parent ID", "spiffeID", myId)
+	reqLogger.Info("Initialized registrar parent ID", "spiffeID", myId)
 	r.myId = &myId
 	return nil
 }
