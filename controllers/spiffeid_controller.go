@@ -111,24 +111,11 @@ func (r *SpiffeIDReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 	if !sameStringSlice(currentEntry.DnsNames, spiffeID.Spec.DnsNames) {
 		log.Info("Updating Spire Entry")
 
-		// SPIRE doesn't push new SVIDs on UpdateEntry yet, so we have to delete the old
-		// one and create a new one.
-		if err := r.ensureDeleted(ctx, log, entryId); err != nil {
-			log.Error(err, "unable to delete old spire entry", "entryid", entryId)
-			return ctrl.Result{}, err
-		}
-
-		newEntryId, err := r.SpireClient.CreateEntry(ctx, r.createCommonRegistrationEntry(spiffeID))
+		_, err := r.SpireClient.UpdateEntry(ctx, &registration.UpdateEntryRequest{
+			Entry: r.createCommonRegistrationEntry(spiffeID),
+		})
 		if err != nil {
-			log.Error(err, "unable to create new SpiffeID entry for update")
-			return ctrl.Result{}, err
-		}
-		r.spiffeIDCollection[req.NamespacedName.String()] = newEntryId.Id
-		log.Info("Created new entry", "entryID", newEntryId.Id)
-
-		spiffeID.Status.EntryId = &newEntryId.Id
-		if err := r.Status().Update(ctx, &spiffeID); err != nil {
-			log.Error(err, "unable to update SpiffeID status")
+			log.Error(err, "unable to update SpiffeID with new DNS names")
 			return ctrl.Result{}, err
 		}
 	}
@@ -289,7 +276,7 @@ func (r *SpiffeIDReconciler) createCommonRegistrationEntry(instance spiffeidv1be
 		ParentId:  *r.myId,
 		SpiffeId:  instance.Spec.SpiffeId,
 		DnsNames:  instance.Spec.DnsNames,
-		//EntryId:   *instance.Status.EntryId,
+		EntryId:   *instance.Status.EntryId,
 	}
 }
 

@@ -106,33 +106,33 @@ func (r *PodReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
-	spiffeId := ""
+	spiffeIdUri := ""
 	switch r.ctlr.Mode {
 	case PodReconcilerModeServiceAccount:
-		spiffeId = r.makeID("ns/%s/sa/%s", req.Namespace, pod.Spec.ServiceAccountName)
+		spiffeIdUri = r.makeID("ns/%s/sa/%s", req.Namespace, pod.Spec.ServiceAccountName)
 	case PodReconcilerModeLabel:
 		if val, ok := pod.GetLabels()[r.ctlr.Value]; ok {
-			spiffeId = r.makeID("%s", val)
+			spiffeIdUri = r.makeID("%s", val)
 		} else {
 			// No relevant label
 			return ctrl.Result{}, nil
 		}
 	case PodReconcilerModeAnnotation:
 		if val, ok := pod.GetAnnotations()[r.ctlr.Value]; ok {
-			spiffeId = r.makeID("%s", val)
+			spiffeIdUri = r.makeID("%s", val)
 		} else {
 			// No relevant annotation
 			return ctrl.Result{}, nil
 		}
 	}
 
-	namespaceSpiffeId := &spiffeidv1beta1.SpiffeID{
+	spiffeId := &spiffeidv1beta1.SpiffeID{
 		ObjectMeta: v1.ObjectMeta{
 			Namespace:   pod.Namespace,
 			Annotations: make(map[string]string),
 		},
 		Spec: spiffeidv1beta1.SpiffeIDSpec{
-			SpiffeId: spiffeId,
+			SpiffeId: spiffeIdUri,
 			DnsNames: make([]string, 0),
 			Selector: spiffeidv1beta1.Selector{
 				PodUid:    pod.GetUID(),
@@ -140,27 +140,27 @@ func (r *PodReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 			},
 		},
 	}
-	namespaceSpiffeId.ObjectMeta.Name = pod.ObjectMeta.Name + "-" + computeHash(&namespaceSpiffeId.Spec, nil)
-	namespaceSpiffeId.Spec.DnsNames = append(namespaceSpiffeId.Spec.DnsNames, pod.Name)
+	spiffeId.ObjectMeta.Name = pod.ObjectMeta.Name + "-" + computeHash(&spiffeId.Spec, nil)
+	spiffeId.Spec.DnsNames = append(spiffeId.Spec.DnsNames, pod.Name)
 
 	// Set pod as owner of new SPIFFE ID
-	err := controllerutil.SetControllerReference(&pod, namespaceSpiffeId, r.ctlr.Scheme)
+	err := controllerutil.SetControllerReference(&pod, spiffeId, r.ctlr.Scheme)
 	if err != nil {
-		log.Error(err, "Failed to set pod as owner of new SpiffeID", "SpiffeID.Name", namespaceSpiffeId.Name)
+		log.Error(err, "Failed to set pod as owner of new SpiffeID", "SpiffeID.Name", spiffeId.Name)
 		return ctrl.Result{}, err
 	}
 
 	// Create SPIFFE ID
-	err = r.ctlr.Create(ctx, namespaceSpiffeId)
+	err = r.ctlr.Create(ctx, spiffeId)
 	if err != nil {
 		if !errors.IsAlreadyExists(err) {
-			log.Error(err, "Failed to create new SpiffeID", "SpiffeID.Name", namespaceSpiffeId.Name)
+			log.Error(err, "Failed to create new SpiffeID", "SpiffeID.Name", spiffeId.Name)
 			return ctrl.Result{}, err
 		}
 	}
 
 	// Add label to pod with name of SPIFFE ID
-	if pod.ObjectMeta.Labels["spiffe.io/spiffeid"] != namespaceSpiffeId.ObjectMeta.Name {
+	if pod.ObjectMeta.Labels["spiffe.io/spiffeid"] != spiffeId.ObjectMeta.Name {
 		retryErr := retry.RetryOnConflict(retry.DefaultRetry, func() error {
 			// Retrieve the latest version of Pod before attempting update
 			// RetryOnConflict uses exponential backoff to avoid exhausting the apiserver
@@ -168,15 +168,15 @@ func (r *PodReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 				log.Error(err, "Failed to get latest version of Pod")
 				return err
 			}
-			pod.ObjectMeta.Labels["spiffe.io/spiffeid"] = namespaceSpiffeId.ObjectMeta.Name
+			pod.ObjectMeta.Labels["spiffe.io/spiffeid"] = spiffeId.ObjectMeta.Name
 
 			err = r.ctlr.Update(ctx, &pod)
 
 			return err
 		})
 		if retryErr != nil {
-			log.Error(err, "Update failed")
-			return ctrl.Result{}, err
+			log.Error(retryErr, "Update failed")
+			return ctrl.Result{}, retryErr
 		}
 		log.Info("Added label to pod")
 	}
@@ -246,15 +246,28 @@ func (e *EndpointReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 				if existing != nil {
 					log.Info("adding DNS names for", "service", svcName)
 					if !containsString(existing.Spec.DnsNames[1:], svcName) {
-						existing.Spec.DnsNames = append(existing.Spec.DnsNames, svcName)
+						retryErr := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+							if err := e.ctlr.Get(ctx, types.NamespacedName{Name: spiffeidname, Namespace: address.TargetRef.Namespace}, existing); err != nil {
+								log.Error(err, "Failed to get latest version of SPIFFE ID")
+								return err
+							}
+
+							existing.Spec.DnsNames = append(existing.Spec.DnsNames, svcName)
+							err := e.ctlr.Update(ctx, existing)
+							if err != nil {
+								log.Error(err, "unable to add DNS names in SPIFFE ID CRD", "name", spiffeidname)
+							}
+							return err
+						})
+						if retryErr != nil {
+							log.Error(retryErr, "unable to add DNS names in SPIFFE ID CRD", "name", spiffeidname)
+							return ctrl.Result{}, retryErr
+						}
+
 						if e.ctlr.svcNametoSpiffeID[svcName] == nil {
 							e.ctlr.svcNametoSpiffeID[svcName] = make([]string, 0)
 						}
 						e.ctlr.svcNametoSpiffeID[svcName] = append(e.ctlr.svcNametoSpiffeID[svcName], spiffeidname)
-						if err := e.ctlr.Update(ctx, existing); err != nil {
-							log.Error(err, "unable to add DNS names in SPIFFE ID CRD", "name", spiffeidname)
-							return ctrl.Result{}, err
-						}
 					}
 				}
 			}
