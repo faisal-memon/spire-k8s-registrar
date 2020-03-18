@@ -52,11 +52,11 @@ type PodController struct {
 	Mode               PodReconcilerMode
 	Value              string
 	DisabledNamespaces []string
+	AddSvcDNSName      bool
 	svcNametoSpiffeID  map[string][]string
 }
 
 func BuildPodControllers(pc *PodController) error {
-	pc.svcNametoSpiffeID = make(map[string][]string)
 
 	err := ctrl.NewControllerManagedBy(pc.Mgr).
 		For(&corev1.Pod{}).
@@ -65,11 +65,14 @@ func BuildPodControllers(pc *PodController) error {
 		return err
 	}
 
-	err = ctrl.NewControllerManagedBy(pc.Mgr).
-		For(&corev1.Endpoints{}).
-		Complete(&EndpointReconciler{ctlr: pc})
-	if err != nil {
-		return err
+	if pc.AddSvcDNSName {
+		pc.svcNametoSpiffeID = make(map[string][]string)
+		err = ctrl.NewControllerManagedBy(pc.Mgr).
+			For(&corev1.Endpoints{}).
+			Complete(&EndpointReconciler{ctlr: pc})
+		if err != nil {
+			return err
+		}
 	}
 
 	return nil

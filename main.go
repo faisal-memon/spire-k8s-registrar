@@ -72,7 +72,7 @@ func main() {
 		setupLog.Error(err, "unable to connect to spire server")
 		os.Exit(1)
 	}
-	setupLog.Info("Connected to spire server.")
+	setupLog.Info("Connected to SPIRE Server.", "Socket", "unix://"+config.ServerSocketPath)
 
 	// Setup all Controllers
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
@@ -117,6 +117,7 @@ func main() {
 			Mode:               mode,
 			Value:              value,
 			DisabledNamespaces: config.DisabledNamespaces,
+			AddSvcDNSName:      config.AddSvcDNSName,
 		}
 		if err := controllers.BuildPodControllers(ctlr); err != nil {
 			setupLog.Error(err, "unable to create controller")
@@ -164,7 +165,6 @@ func ConnectSpire(ctx context.Context, log logr.Logger, serverAddress, serverSoc
 			return nil, err
 		}
 	} else {
-		fmt.Printf("Connecting to: %s\n", "unix://"+serverSocketPath)
 		conn, err = grpc.DialContext(ctx, "unix://"+serverSocketPath, grpc.WithInsecure())
 		if err != nil {
 			return nil, err

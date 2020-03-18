@@ -11,6 +11,7 @@ const (
 	defaultLogLevel      = "info"
 	defaultMetricsAddr   = ":8080"
 	defaultPodController = true
+	defaultAddSvcDNSName = true
 )
 
 type Config struct {
@@ -22,6 +23,7 @@ type Config struct {
 	ServerAddress      string   `hcl:"server_address"`
 	TrustDomain        string   `hcl:"trust_domain"`
 	PodController      bool     `hcl:"pod_controller"`
+	AddSvcDNSName      bool     `hcl:"add_svc_dns_name"`
 	PodLabel           string   `hcl:"pod_label"`
 	PodAnnotation      string   `hcl:"pod_annotation"`
 	LeaderElection     bool     `hcl:"leader_election"`
@@ -39,6 +41,7 @@ func LoadConfig(path string) (*Config, error) {
 func ParseConfig(hclConfig string) (*Config, error) {
 	c := new(Config)
 	c.PodController = defaultPodController
+	c.AddSvcDNSName = defaultAddSvcDNSName
 	if err := hcl.Decode(c, hclConfig); err != nil {
 		return nil, errs.New("unable to decode configuration: %v", err)
 	}
