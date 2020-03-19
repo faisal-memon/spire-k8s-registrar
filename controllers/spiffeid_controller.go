@@ -108,7 +108,7 @@ func (r *SpiffeIDReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 		return ctrl.Result{}, err
 	}
 
-	if !sameStringSlice(currentEntry.DnsNames, spiffeID.Spec.DnsNames) {
+	if !equalStringSlice(currentEntry.DnsNames, spiffeID.Spec.DnsNames) {
 		log.Info("Updating Spire Entry")
 
 		_, err := r.SpireClient.UpdateEntry(ctx, &registration.UpdateEntryRequest{
