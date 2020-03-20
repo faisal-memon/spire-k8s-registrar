@@ -228,7 +228,7 @@ func (e *EndpointReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
-	svcName := req.NamespacedName.Name + "." + req.NamespacedName.Namespace
+	svcName := req.NamespacedName.Name + "." + req.NamespacedName.Namespace + "." + "svc"
 	for _, subset := range endpoints.Subsets {
 		for _, address := range subset.Addresses {
 			if address.TargetRef != nil {
