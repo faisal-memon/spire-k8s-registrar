@@ -32,14 +32,41 @@ The configuration file is a **required** by the registrar. It contains
 | `pod_annotation`           | string    | optional | The pod annotation used for [Annotation Based Workload Registration](#annotation-based-workload-registration) | |
 | `server_address`           | string    | optional | The IP/Host:Port of the Spire Server | |
 
-### Example
+### Examples 
 
+### Configuration
 ```
 log_level = "debug"
-trust_domain = "domain.test"
+trust_domain = "example.org"
 server_socket_path = "/run/spire/sockets/registration.sock"
 cluster = "production"
 ```
+
+### SPIFFE ID CRD
+```
+apiVersion: spiffeid.spiffe.io/v1beta1
+kind: SpiffeID
+metadata:
+  name: my-spiffe-id
+  namespace: my-namespace
+spec:
+  dnsNames:
+  - my-dns-name
+  selector:
+    namespace: default
+    podName: my-pod-name
+  spiffeId: spiffe://example.org/my-spiffe-id
+```
+
+The support selectors are:
+- podLabel --  Pod label name/value to match for this SPIFFE ID
+- podName -- Pod name to match for this SPIFFE ID
+- podUID --  Pod UID to match for this SPIFFE ID
+- namespace -- Namespace to match for this SPIFFE ID
+- serviceAccount -- ServiceAccount to match for this SPIFFE ID
+- arbitrary -- Arbitrary selectors
+
+Specifying DNS Names is optional.
 
 ## Node Registration
 
@@ -56,7 +83,87 @@ TTL           : default
 Selector      : k8s_psat:cluster:example-cluster
 ```
 
+## Workload Registration
+
+The registrar has a POD controller that handles pod CREATE and DELETE events to create
+and delete registration entries for workloads running on those pods. The
+workload registration entries are configured to run on any node in the
+cluster.
+
+There are three workload registration modes:
+1. [Service Account Based](#service-account-based-workload-registration) -- Don't specify either `pod_label` or `pod_annotation`
+2. [Label Based](#label-based-workload-registration) -- Specify only `pod_label`
+3. [Annotation Based](#annotation-based-workload-registration) -- Specify only `pod_annotation`.
+
+### Service Account Based Workload Registration
+
+Service account derived workload registration maps the service account into a
+SPIFFE ID of the form
+`spiffe://<TRUSTDOMAIN>/ns/<NAMESPACE>/sa/<SERVICEACCOUNT>`. For example, if a
+pod came in with the service account `blog` in the `production` namespace, the
+following registration entry would be created:
+
+```
+Entry ID      : 200d8b19-8334-443d-9494-f65d0ad64eb5
+SPIFFE ID     : spiffe://example.org/ns/production/sa/blog
+Parent ID     : spiffe://example.org/k8s-workload-registrar/example-cluster/node
+TTL           : default
+Selector      : k8s:ns:production
+Selector      : k8s:pod-name:example-workload-98b6b79fd-jnv5m
+```
+
+### Label Based Workload Registration
+
+Label based workload registration maps a pod label value into a SPIFFE ID of
+the form `spiffe://<TRUSTDOMAIN>/<LABELVALUE>`. For example if the registrar
+was configured with the `spire-workload` label and a pod came in with
+`spire-workload=example-workload`, the following registration entry would be
+created:
+
+```
+Entry ID      : 200d8b19-8334-443d-9494-f65d0ad64eb5
+SPIFFE ID     : spiffe://example.org/example-workload
+Parent ID     : spiffe://example.org/k8s-workload-registrar/example-cluster/node
+TTL           : default
+Selector      : k8s:ns:production
+Selector      : k8s:pod-name:example-workload-98b6b79fd-jnv5m
+```
+
+Pods that don't contain the pod label are ignored.
+
+### Annotation Based Workload Registration
+
+Annotation based workload registration maps a pod annotation value into a SPIFFE ID of
+the form `spiffe://<TRUSTDOMAIN>/<ANNOTATIONVALUE>`. By using this mode,
+it is possible to freely set the SPIFFE ID path. For example if the registrar
+was configured with the `spiffe.io/spiffe-id` annotation and a pod came in with
+`spiffe.io/spiffe-id: production/example-workload`, the following registration entry would be
+created:
+
+```
+Entry ID      : 200d8b19-8334-443d-9494-f65d0ad64eb5
+SPIFFE ID     : spiffe://example.org/production/example-workload
+Parent ID     : spiffe://example.org/k8s-workload-registrar/example-cluster/node
+TTL           : default
+Selector      : k8s:ns:production
+Selector      : k8s:pod-name:example-workload-98b6b79fd-jnv5m
+```
+
+Pods that don't contain the pod annotation are ignored.
+
+## Deployment
+
+The registrar can be deployed two ways:
+
+1. As a container in the SPIRE server pod, since it talks to SPIRE server via a Unix domain socket.
+It will need access to a shared volume containing the Spire Server registration socket file. 
+2. As a container outside the SPIRE server pod. In this scenario you will need to provide the IP or
+hostname of the SPIRE Server along with the port (`server_address`). Additionally you will need to create
+an admin entry on the SPIRE Server for the registrar to use to request new SVIDs.
+
 ## Differences
+
+Differences with the [k8s-workload-registrar](https://github.com/spiffe/spire/blob/master/support/k8s/k8s-workload-registrar/): 
 
 - A namespace scoped SpiffeID CRD is defined. A controller watches for create, update, delete, etc. events and creates entries on the SPIRE Server accordingly.
 - An option pod controller (`pod_controller`) watches for POD events and creates/deletes SpiffeID CRDs accordingly. The pod controller sets the pod as the controller owner of the SPIFFE ID CRD so it is automatically garbage collected if the POD is deleted. The pod controller add the pod name as the first DNS name, which makes it also populate the CN field of the SVID.

@@ -24,11 +24,11 @@ import (
 // NOTE: json tags are required.  Any new fields you add must have json tags for the fields to be serialized.
 
 type Selector struct {
-	// Pod label names/values to match for this spiffe ID
+	// Pod label name/value to match for this spiffe ID
 	PodLabel map[string]string `json:"podLabel,omitempty"`
-	// Pod names to match for this spiffe ID
+	// Pod name to match for this spiffe ID
 	PodName string `json:"podName,omitempty"`
-	// Pod UIDs to match for this spiffe ID
+	// Pod UID to match for this spiffe ID
 	PodUid types.UID `json:"podUid,omitempty"`
 	// Namespace to match for this spiffe ID
 	Namespace string `json:"namespace,omitempty"`
